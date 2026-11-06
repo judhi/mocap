@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Standard BVH Converter & Editor</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    header { background: #1e293b; padding: 15px 24px; border-bottom: 1px solid #334155; display: flex; align-items: center; justify-content: space-between; }
+    header h2 { margin: 0; font-size: 1.25rem; font-weight: 600; color: #38bdf8; }
+    .layout { display: flex; flex: 1; overflow: hidden; }
+    
+    .sidebar { width: 340px; background: #1e293b; padding: 24px; border-right: 1px solid #334155; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; z-index: 10; }
+    .editor-sidebar { width: 340px; background: #1e293b; padding: 24px; border-left: 1px solid #334155; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; z-index: 10; }
+    
+    .main { flex: 1; position: relative; background: #000; display: flex; flex-direction: column; }
+    .upload-box { border: 2px dashed #475569; border-radius: 8px; padding: 20px; text-align: center; cursor: pointer; transition: all 0.2s; background: #0f172a; }
+    .upload-box:hover { border-color: #38bdf8; background: #182136; }
+    video { width: 100%; background: #000; border-radius: 8px; max-height: 180px; object-fit: contain; border: 1px solid #334155; display: none; }
+    
+    button { background: #3b82f6; color: white; border: none; padding: 10px; width: 100%; border-radius: 8px; cursor: pointer; font-weight: 600; transition: 0.2s; }
+    button:disabled { background: #334155; cursor: not-allowed; color: #94a3b8; }
+    button:hover:not(:disabled) { background: #2563eb; }
+    button.danger { background: #ef4444; }
+    button.danger:hover:not(:disabled) { background: #dc2626; }
+    
+    .status { font-size: 0.85rem; color: #cbd5e1; background: #0f172a; padding: 12px; border-radius: 8px; border: 1px solid #334155; font-family: monospace; word-wrap: break-word; }
+    
+    .control-group { display: flex; flex-direction: column; gap: 5px; background: #0f172a; padding: 12px; border-radius: 8px; border: 1px solid #334155; }
+    .control-group label { font-size: 0.85rem; font-weight: bold; color: #94a3b8; }
+    .control-group select { width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #1e293b; color: white; cursor: pointer; }
+    
+    .slider-row { display: flex; align-items: center; gap: 10px; }
+    .slider-row input[type=range] { flex: 1; accent-color: #38bdf8; }
+    .slider-row span { width: 45px; font-family: monospace; font-size: 0.85rem; text-align: right; }
+    
+    #three-canvas { width: 100%; flex: 1; cursor: crosshair; }
+    
+    .timeline { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); display: flex; gap: 16px; background: rgba(15, 23, 42, 0.9); padding: 16px 24px; border-radius: 12px; width: 85%; align-items: center; border: 1px solid #334155; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+    .playback-btn { background: transparent; border: 1px solid #475569; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; padding: 0; margin: 0; flex-shrink: 0; }
+    .playback-btn:hover:not(:disabled) { background: #334155; }
+    
+    /* Custom Timeline Track Container */
+    .timeline-container { position: relative; flex: 1; height: 30px; display: flex; align-items: center; }
+    .timeline-container input[type=range] { width: 100%; position: absolute; z-index: 1; opacity: 0.5; accent-color: #38bdf8; cursor: pointer; }
+    #keyframe-track { position: absolute; top: 0; left: 10px; right: 10px; height: 100%; z-index: 2; pointer-events: none; }
+    
+    /* Draggable Keyframe Marker */
+    .kf-marker {
+      position: absolute; top: 50%; transform: translate(-50%, -50%) rotate(45deg);
+      width: 12px; height: 12px; background: #fbbf24; border: 1px solid #000;
+      pointer-events: auto; cursor: ew-resize; box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+      transition: transform 0.1s;
+    }
+    .kf-marker:hover { transform: translate(-50%, -50%) rotate(45deg) scale(1.3); background: #fcd34d; }
+    .kf-marker.active-frame { background: #ef4444; }
+    .kf-marker.outside-range { opacity: 0.4; }
+
+    /* Trim handles & dimmed (trimmed-away) regions */
+    .trim-dim { position: absolute; top: 2px; bottom: 2px; background: rgba(0, 0, 0, 0.65); pointer-events: none; z-index: 0; border-radius: 3px; }
+    .trim-handle {
+      position: absolute; top: -3px; bottom: -3px; width: 10px; transform: translateX(-50%);
+      background: #10b981; border: 1px solid #064e3b; border-radius: 3px;
+      cursor: ew-resize; pointer-events: auto; z-index: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+    }
+    .trim-handle::after { content: ''; position: absolute; left: 50%; top: 25%; bottom: 25%; width: 2px; transform: translateX(-50%); background: rgba(6, 78, 59, 0.8); }
+    .trim-handle:hover { background: #34d399; }
+
+    .trim-info { font-family: monospace; font-size: 0.8rem; color: #cbd5e1; line-height: 1.5; }
+    .btn-row { display: flex; gap: 8px; }
+    button.danger:disabled { opacity: 0.45; }
+    button.secondary { background: transparent; border: 1px solid #475569; color: #e2e8f0; }
+    button.secondary:hover:not(:disabled) { background: #334155; }
+    button.secondary:disabled { border-color: #334155; }
+    button.success { background: #10b981; }
+    button.success:hover:not(:disabled) { background: #059669; }
+    kbd { background: #334155; border-radius: 3px; padding: 0 5px; font-size: 0.75rem; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <header>
+    <h2>AI MoCap (Clickable Joints, Draggable Keyframes & Timeline Trim)</h2>
+  </header>
+  <div class="layout">
+    
+    <!-- LEFT SIDEBAR: MoCap & IO -->
+    <div class="sidebar">
+      <div class="upload-box" onclick="document.getElementById('video-input').click()">
+        <svg style="width:32px;height:32px;margin-bottom:8px;color:#94a3b8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+        <div style="font-weight:600">1. Click to upload video</div>
+      </div>
+      <input type="file" id="video-input" accept="video/*" style="display:none">
+      <button id="import-bvh-btn" class="secondary">Or import an existing .BVH to edit</button>
+      <input type="file" id="bvh-input" accept=".bvh,.txt,text/plain" style="display:none">
+      
+      <video id="input-video" playsinline muted controls></video>
+      <div id="status" class="status">Awaiting video...</div>
+      
+      <button id="process-btn" disabled>2. Generate Motion (IK Solve)</button>
+      <button id="download-btn" disabled style="background:#10b981;">3. Download Edited .BVH</button>
+    </div>
+    
+    <!-- MAIN: 3D Preview & Timeline -->
+    <div class="main">
+      <div id="three-canvas"></div>
+      
+      <div class="timeline">
+        <button id="play-btn" class="playback-btn" disabled>
+          <svg style="width:20px;height:20px;margin-left:3px" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+        <span style="font-size: 0.85rem; font-family: monospace; min-width: 65px; text-align: center;" id="frame-counter">0 / 0</span>
+        
+        <div class="timeline-container">
+          <input type="range" id="scrubber" min="0" max="100" value="0" disabled>
+          <div id="keyframe-track"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT SIDEBAR: Keyframe Editor -->
+    <div class="editor-sidebar" id="editor-panel" style="opacity: 0.5; pointer-events: none;">
+      <h3 style="margin:0; color:#38bdf8; font-size: 1.1rem;">Keyframe Editor</h3>
+      <p style="font-size: 0.8rem; color: #94a3b8; margin:0;">Click a joint in 3D to select it, or use the dropdown. Drag keyframes on the timeline. Double-click or right-click a keyframe (or press <kbd>Del</kbd>) to remove it.</p>
+      
+      <div class="control-group">
+        <label>Selected Bone (Click 3D Model)</label>
+        <select id="bone-select"></select>
+      </div>
+
+      <div class="control-group">
+        <label>Rotation X (Pitch)</label>
+        <div class="slider-row"><input type="range" id="rot-x" min="-180" max="180" value="0"><span id="val-x">0°</span></div>
+        <label style="margin-top:10px;">Rotation Y (Yaw)</label>
+        <div class="slider-row"><input type="range" id="rot-y" min="-180" max="180" value="0"><span id="val-y">0°</span></div>
+        <label style="margin-top:10px;">Rotation Z (Roll)</label>
+        <div class="slider-row"><input type="range" id="rot-z" min="-180" max="180" value="0"><span id="val-z">0°</span></div>
+      </div>
+      
+      <button id="set-kf-btn" style="background:#fbbf24; color:#000;">Add Keyframe at Current Frame</button>
+      <button id="del-kf-btn" class="danger">Remove Keyframe at Current Frame</button>
+      <button id="clear-bone-btn" class="danger" style="background: transparent; border: 1px solid #ef4444; color: #ef4444;">Clear All Keyframes (This Bone)</button>
+
+      <div class="control-group">
+        <label>Trim Timeline</label>
+        <div class="trim-info" id="trim-info">Range: -</div>
+        <div class="btn-row">
+          <button id="set-in-btn" class="secondary" title="Shortcut: I">Set In <kbd>I</kbd></button>
+          <button id="set-out-btn" class="secondary" title="Shortcut: O">Set Out <kbd>O</kbd></button>
+        </div>
+        <button id="reset-trim-btn" class="secondary">Reset Range</button>
+        <button id="crop-btn" class="success">Crop to Range (Permanent)</button>
+        <button id="undo-crop-btn" class="secondary" disabled>Undo Last Crop</button>
+        <p style="font-size: 0.75rem; color: #94a3b8; margin: 4px 0 0;">Drag the green handles on the timeline, or use Set In / Set Out at the current frame. Playback loops inside the range and the BVH export uses only the range. Crop makes it permanent.</p>
+      </div>
+
+      <div class="control-group">
+        <label>Foot Grounding</label>
+        <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; font-weight:normal; color:#cbd5e1;">
+          <input type="checkbox" id="keep-jumps" style="width:auto;"> Keep jumps (use the existing hip height)
+        </label>
+        <button id="ground-btn" class="success">Snap Feet to Ground</button>
+        <p style="font-size: 0.75rem; color: #94a3b8; margin: 4px 0 0;">Sets hip height from the legs so the lowest foot rests on the floor in every frame (runs automatically after extraction; run it again after editing leg keyframes). Video-extracted motion has no real hip height, so leave "Keep jumps" off for it. Turn it on for imported BVH files whose hip height is already correct: only frames where the feet are near the floor get snapped, and jumps are kept.</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 0. DOM REFS + VIDEO LOADING (only needs the DOM, so it works even if a CDN library fails to load)
+    const videoElement = document.getElementById('input-video');
+    const statusText = document.getElementById('status');
+    const processBtn = document.getElementById('process-btn');
+    const playBtn = document.getElementById('play-btn');
+    const scrubber = document.getElementById('scrubber');
+    const frameCounter = document.getElementById('frame-counter');
+    const downloadBtn = document.getElementById('download-btn');
+
+    const libWarnings = [];
+    if (typeof THREE === 'undefined') libWarnings.push('three.js');
+    else if (!THREE.OrbitControls) libWarnings.push('OrbitControls (camera orbit disabled)');
+    if (typeof Pose === 'undefined') libWarnings.push('MediaPipe Pose (video motion extraction unavailable)');
+    if (libWarnings.length) {
+      statusText.innerText = 'Could not load from CDN: ' + libWarnings.join(', ') + '. Check your internet connection / ad-blocker, or open this file in a normal browser tab.';
+    }
+    window.addEventListener('error', (e) => { statusText.innerText = 'Script error: ' + (e.message || 'unknown error'); });
+
+    let videoURL = null;
+    document.getElementById('video-input').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (videoURL) URL.revokeObjectURL(videoURL);
+      processBtn.disabled = true;
+      statusText.innerText = `Loading ${file.name}...`;
+      videoElement.style.display = 'block';
+      videoElement.onloadeddata = () => {
+        statusText.innerText = `Video loaded (${videoElement.videoWidth}x${videoElement.videoHeight}, ${videoElement.duration.toFixed(1)}s). Ready to extract.` +
+          (typeof Pose === 'undefined' ? ' (MediaPipe failed to load, so extraction will not work.)' : '');
+        processBtn.disabled = false;
+      };
+      videoElement.onerror = () => {
+        statusText.innerText = `This browser cannot decode "${file.name}". Try an H.264 .mp4 or a .webm file (iPhone HEVC .mov files often fail in Chrome/Firefox).`;
+        processBtn.disabled = true;
+      };
+      videoURL = URL.createObjectURL(file);
+      videoElement.src = videoURL;
+      videoElement.load();
+      e.target.value = '';
+    });
+
+    // 1. STANDARD BVH RIG
+    const STANDARD_RIG = {
+      name: "Hips", channels: ["Xposition", "Yposition", "Zposition", "Zrotation", "Xrotation", "Yrotation"], offset: [0, 95.3, 0],
+      children: [{ name: "Spine", offset: [0, 10, 0], channels: ["Zrotation", "Xrotation", "Yrotation"],
+        children: [{ name: "Chest", offset: [0, 15, 0], channels: ["Zrotation", "Xrotation", "Yrotation"],
+          children: [
+            { name: "Neck", offset: [0, 12, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [{ name: "Head", offset: [0, 8, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [] }] },
+            { name: "LeftShoulder", offset: [8, 10, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [{ name: "LeftArm", offset: [15, 0, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [{ name: "LeftForeArm", offset: [20, 0, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [{ name: "LeftHand", offset: [15, 0, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [] }] }] }] },
+            { name: "RightShoulder", offset: [-8, 10, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [{ name: "RightArm", offset: [-15, 0, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [{ name: "RightForeArm", offset: [-20, 0, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [{ name: "RightHand", offset: [-15, 0, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [] }] }] }] }
+          ]
+        }],
+      },
+      { name: "LeftUpLeg", offset: [8, -5, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [{ name: "LeftLeg", offset: [0, -35, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [{ name: "LeftFoot", offset: [0, -35, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [] }] }] },
+      { name: "RightUpLeg", offset: [-8, -5, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [{ name: "RightLeg", offset: [0, -35, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [{ name: "RightFoot", offset: [0, -35, 0], channels: ["Zrotation", "Xrotation", "Yrotation"], children: [] }] }] }]
+    };
+
+    // 2. THREE.JS INITIALIZATION
+    const container = document.getElementById('three-canvas');
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 1, 1000);
+    camera.position.set(0, 100, 300);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    container.appendChild(renderer.domElement);
+    const controls = (THREE.OrbitControls) ? new THREE.OrbitControls(camera, renderer.domElement) : null;
+    if (controls) { controls.target.set(0, 90, 0); controls.update(); }
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    const light = new THREE.DirectionalLight(0xffffff, 0.8);
+    light.position.set(100, 200, 100);
+    scene.add(light);
+    const grid = new THREE.GridHelper(300, 30, 0x334155, 0x0f172a);
+    scene.add(grid);
+
+    let jointsMap = {};
+    let interactableMeshes = [];
+    const skeletonGroup = new THREE.Group();
+    scene.add(skeletonGroup);
+    const boneNamesList = [];
+
+    let sphereR = 3.5, boneR = 1.2;
+    let RIG = STANDARD_RIG, ROOT_NAME = STANDARD_RIG.name;
+    const defaultMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.4 });
+    const selectedMat = new THREE.MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.2, emissive: 0x452000 });
+
+    function buildRig(node, parentObj) {
+      boneNamesList.push(node.name);
+      // Increased sphere size slightly for easier clicking
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(sphereR, 16, 16), defaultMat.clone());
+      mesh.position.set(...node.offset);
+      mesh.name = node.name;
+      interactableMeshes.push(mesh);
+      
+      if (!parentObj) skeletonGroup.add(mesh);
+      else {
+        parentObj.add(mesh);
+        const len = new THREE.Vector3(...node.offset).length();
+        if (len > 0) {
+          const bone = new THREE.Mesh(new THREE.CylinderGeometry(boneR, boneR, len, 8), new THREE.MeshStandardMaterial({ color: 0x0284c7, roughness: 0.6 }));
+          bone.position.copy(mesh.position).multiplyScalar(0.5);
+          bone.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), new THREE.Vector3(...node.offset).normalize());
+          parentObj.add(bone);
+        }
+      }
+      jointsMap[node.name] = mesh;
+      node.children.forEach(c => buildRig(c, mesh));
+    }
+    const boneSelect = document.getElementById('bone-select');
+
+    // (Re)build the 3D skeleton + bone dropdown for any rig. rootPos0 = root position in the first frame (imported BVH).
+    function loadRig(rig, rootPos0) {
+      RIG = rig; ROOT_NAME = rig.name;
+      while (skeletonGroup.children.length) skeletonGroup.remove(skeletonGroup.children[0]);
+      jointsMap = {}; interactableMeshes = []; boneNamesList.length = 0;
+
+      // Size the skeleton + fit the camera
+      if (rig === STANDARD_RIG) {
+        sphereR = 3.5; boneR = 1.2;
+        grid.scale.setScalar(1); grid.position.y = 0;
+        camera.near = 1; camera.far = 1000; camera.position.set(0, 100, 300);
+        if (controls) controls.target.set(0, 90, 0);
+      } else {
+        const mn = new THREE.Vector3(Infinity, Infinity, Infinity), mx = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+        (function walk(n, parent) {
+          const p = parent ? parent.clone().add(new THREE.Vector3(...n.offset)) : new THREE.Vector3(...(rootPos0 || n.offset));
+          mn.min(p); mx.max(p); n.children.forEach(c => walk(c, p));
+        })(rig, null);
+        const size = Math.max(mx.x - mn.x, mx.y - mn.y, mx.z - mn.z, 1e-3);
+        const c = mn.clone().add(mx).multiplyScalar(0.5);
+        const k = size / 120; // standard rig is ~120 units tall
+        sphereR = 3.5 * k; boneR = 1.2 * k;
+        grid.scale.setScalar(k); grid.position.y = mn.y;
+        camera.near = Math.max(size * 0.01, 1e-3); camera.far = size * 100;
+        camera.position.set(c.x, c.y + size * 0.2, c.z + size * 2.5);
+        if (controls) controls.target.copy(c);
+      }
+      camera.updateProjectionMatrix();
+      if (controls) controls.update();
+
+      buildRig(rig, null);
+      boneSelect.innerHTML = '';
+      boneNamesList.forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name; opt.innerText = name;
+        boneSelect.appendChild(opt);
+      });
+    }
+    loadRig(STANDARD_RIG);
+
+    // --- RAYCASTER FOR 3D JOINT CLICKING ---
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    
+    renderer.domElement.addEventListener('click', (event) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(interactableMeshes);
+      
+      if (intersects.length > 0) {
+        boneSelect.value = intersects[0].object.name;
+        updateEditorUI();
+      }
+    });
+
+    // 3. STATE & KEYFRAME DATA
+    let processedFrames = [];
+    let isPlaying = false;
+    let currentFrame = 0;
+    const keyframes = {}; // Format: { "LeftArm": { 10: [z, x, y] } }
+    let trimIn = 0, trimOut = 0;   // inclusive frame range used for playback + export
+    let undoSnapshot = null;       // one-level undo for "Crop to Range"
+    let frameTime = 1 / 30;        // seconds per frame (30 fps for video extraction, or taken from an imported BVH)
+    let exportName = 'Standard_Robot_Motion_Edited.bvh';
+    let lastTime = performance.now(), playAcc = 0;
+
+    function resetEditState() {
+      Object.keys(keyframes).forEach(k => delete keyframes[k]);
+      undoSnapshot = null; trimIn = 0; trimOut = 0;
+    }
+
+    // 4. MOCAP PIPELINE
+    let pose = null, latestLandmarks = null;
+    if (typeof Pose !== 'undefined') {
+      pose = new Pose({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}` });
+      pose.setOptions({ modelComplexity: 2, smoothLandmarks: true });
+      pose.onResults((res) => { latestLandmarks = res.poseWorldLandmarks; });
+    }
+
+    processBtn.addEventListener('click', async () => {
+      if (!pose) {
+        statusText.innerText = 'MediaPipe Pose did not load from the CDN, so motion cannot be extracted. Check your connection and reload.';
+        return;
+      }
+      processBtn.disabled = true;
+      isPlaying = false; updatePlayIcon();
+      if (RIG !== STANDARD_RIG) { loadRig(STANDARD_RIG); resetEditState(); } // leave an imported BVH rig
+      exportName = 'Standard_Robot_Motion_Edited.bvh';
+      document.getElementById('keep-jumps').checked = false;
+      processedFrames = [];
+      const fps = 30; frameTime = 1 / fps;
+      const totalFrames = Math.floor(videoElement.duration * fps);
+      statusText.innerText = "Initializing AI Pose Model...";
+      await pose.initialize();
+      
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = videoElement.videoWidth || 640; offCanvas.height = videoElement.videoHeight || 480;
+      const ctx = offCanvas.getContext('2d', { willReadFrequently: true });
+
+      for (let f = 0; f < totalFrames; f++) {
+        statusText.innerText = `Extracting Motion: ${f + 1}/${totalFrames}`;
+        await new Promise(r => { videoElement.onseeked = r; videoElement.currentTime = f / fps; });
+        ctx.drawImage(videoElement, 0, 0, offCanvas.width, offCanvas.height);
+        await pose.send({ image: offCanvas });
+        if (latestLandmarks) processedFrames.push(solveKinematics(latestLandmarks));
+        else processedFrames.push(processedFrames.length > 0 ? processedFrames[processedFrames.length-1] : generateEmptyFrame());
+      }
+      
+      statusText.innerText = `Extraction Complete! Edit keyframes or download BVH.`;
+      playBtn.disabled = false; downloadBtn.disabled = false; scrubber.disabled = false;
+      groundFeet(false);
+      scrubber.max = processedFrames.length - 1;
+      trimIn = 0; trimOut = processedFrames.length - 1; undoSnapshot = null; currentFrame = 0;
+      document.getElementById('editor-panel').style.opacity = '1';
+      document.getElementById('editor-panel').style.pointerEvents = 'all';
+      isPlaying = true; updatePlayIcon(); updateEditorUI();
+    });
+
+    // Inverse Kinematics Math
+    function generateEmptyFrame() {
+      const empty = {}; Object.keys(jointsMap).forEach(k => empty[k] = { pos: [0,95.3,0], rot: [0,0,0] }); return empty;
+    }
+    function solveKinematics(lm) {
+      const vec = (i) => new THREE.Vector3(lm[i].x, -lm[i].y, -lm[i].z);
+      const lHip = vec(23), rHip = vec(24), lShldr = vec(11), rShldr = vec(12);
+      const hMid = new THREE.Vector3().addVectors(lHip, rHip).multiplyScalar(0.5);
+      const sMid = new THREE.Vector3().addVectors(lShldr, rShldr).multiplyScalar(0.5);
+      
+      let worldQ = {};
+      const xAx = new THREE.Vector3().subVectors(lHip, rHip).normalize();
+      const yAx = new THREE.Vector3().subVectors(sMid, hMid).normalize();
+      const zAx = new THREE.Vector3().crossVectors(xAx, yAx).normalize();
+      const yAxO = new THREE.Vector3().crossVectors(zAx, xAx).normalize();
+      
+      const rQ = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAx, yAxO, zAx));
+      worldQ['Hips'] = rQ; worldQ['Spine'] = rQ; worldQ['Chest'] = rQ; worldQ['LeftShoulder'] = rQ; worldQ['RightShoulder'] = rQ;
+      
+      const eR = new THREE.Euler().setFromQuaternion(rQ, 'ZXY');
+      const hRot = [THREE.MathUtils.radToDeg(eR.z), THREE.MathUtils.radToDeg(eR.x), THREE.MathUtils.radToDeg(eR.y)];
+
+      function getRot(b, p, s, e, rD) {
+        const wD = new THREE.Vector3().subVectors(e, s).normalize();
+        if (wD.lengthSq() < 0.001) { worldQ[b] = worldQ[p].clone(); return [0,0,0]; }
+        const lQ = new THREE.Quaternion().setFromUnitVectors(rD, wD.clone().applyQuaternion(worldQ[p].clone().invert()));
+        worldQ[b] = worldQ[p].clone().multiply(lQ);
+        const eul = new THREE.Euler().setFromQuaternion(lQ, 'ZXY');
+        return [THREE.MathUtils.radToDeg(eul.z), THREE.MathUtils.radToDeg(eul.x), THREE.MathUtils.radToDeg(eul.y)];
+      }
+
+      const f = {
+        Hips: { pos: [hMid.x*100, hMid.y*100+95.3, hMid.z*100], rot: hRot }, Spine: {rot:[0,0,0]}, Chest: {rot:[0,0,0]}, Head: {rot:[0,0,0]},
+        Neck: { rot: getRot('Neck', 'Chest', sMid, vec(0), new THREE.Vector3(0,1,0)) }, LeftShoulder: {rot:[0,0,0]}, RightShoulder: {rot:[0,0,0]},
+        LeftArm: { rot: getRot('LeftArm', 'LeftShoulder', lShldr, vec(13), new THREE.Vector3(1,0,0)) },
+        LeftForeArm: { rot: getRot('LeftForeArm', 'LeftArm', vec(13), vec(15), new THREE.Vector3(1,0,0)) },
+        LeftHand: { rot: getRot('LeftHand', 'LeftForeArm', vec(15), vec(19), new THREE.Vector3(1,0,0)) },
+        RightArm: { rot: getRot('RightArm', 'RightShoulder', rShldr, vec(14), new THREE.Vector3(-1,0,0)) },
+        RightForeArm: { rot: getRot('RightForeArm', 'RightArm', vec(14), vec(16), new THREE.Vector3(-1,0,0)) },
+        RightHand: { rot: getRot('RightHand', 'RightForeArm', vec(16), vec(20), new THREE.Vector3(-1,0,0)) },
+        LeftUpLeg: { rot: getRot('LeftUpLeg', 'Hips', lHip, vec(25), new THREE.Vector3(0,-1,0)) },
+        LeftLeg: { rot: getRot('LeftLeg', 'LeftUpLeg', vec(25), vec(27), new THREE.Vector3(0,-1,0)) },
+        LeftFoot: { rot: getRot('LeftFoot', 'LeftLeg', vec(27), vec(31), new THREE.Vector3(0,-1,0)) },
+        RightUpLeg: { rot: getRot('RightUpLeg', 'Hips', rHip, vec(26), new THREE.Vector3(0,-1,0)) },
+        RightLeg: { rot: getRot('RightLeg', 'RightUpLeg', vec(26), vec(28), new THREE.Vector3(0,-1,0)) },
+        RightFoot: { rot: getRot('RightFoot', 'RightLeg', vec(28), vec(32), new THREE.Vector3(0,-1,0)) }
+      };
+      Object.keys(f).forEach(k => f[k].rot = f[k].rot.map(v => isNaN(v)?0:Math.round(v*100)/100));
+      return f;
+    }
+
+    // 5. KEYFRAME INTERPOLATION (Slerp)
+    function getInterpolatedRotation(bone, frameIdx, aiRot) {
+      if (!keyframes[bone] || Object.keys(keyframes[bone]).length === 0) return aiRot;
+      const keys = Object.keys(keyframes[bone]).map(Number).sort((a,b)=>a-b);
+      if (keyframes[bone][frameIdx]) return keyframes[bone][frameIdx];
+      if (frameIdx < keys[0]) return keyframes[bone][keys[0]];
+      if (frameIdx > keys[keys.length-1]) return keyframes[bone][keys[keys.length-1]];
+      
+      let k0 = keys[0], k1 = keys[keys.length-1];
+      for (let i=0; i<keys.length-1; i++) { if (frameIdx > keys[i] && frameIdx < keys[i+1]) { k0 = keys[i]; k1 = keys[i+1]; break; } }
+      
+      const t = (frameIdx - k0) / (k1 - k0);
+      const rot0 = keyframes[bone][k0], rot1 = keyframes[bone][k1];
+      const q0 = new THREE.Quaternion().setFromEuler(new THREE.Euler(THREE.MathUtils.degToRad(rot0[1]), THREE.MathUtils.degToRad(rot0[2]), THREE.MathUtils.degToRad(rot0[0]), 'ZXY'));
+      const q1 = new THREE.Quaternion().setFromEuler(new THREE.Euler(THREE.MathUtils.degToRad(rot1[1]), THREE.MathUtils.degToRad(rot1[2]), THREE.MathUtils.degToRad(rot1[0]), 'ZXY'));
+      
+      q0.slerp(q1, t);
+      const e = new THREE.Euler().setFromQuaternion(q0, 'ZXY');
+      return [THREE.MathUtils.radToDeg(e.z), THREE.MathUtils.radToDeg(e.x), THREE.MathUtils.radToDeg(e.y)];
+    }
+
+    // 6. EDITOR UI & DRAGGABLE TIMELINE MARKERS
+    const rx = document.getElementById('rot-x'), ry = document.getElementById('rot-y'), rz = document.getElementById('rot-z');
+    const vx = document.getElementById('val-x'), vy = document.getElementById('val-y'), vz = document.getElementById('val-z');
+    const track = document.getElementById('keyframe-track');
+
+    // ---- Keyframe removal helpers ----
+    function removeKeyframe(bone, frame) {
+      if (keyframes[bone] && keyframes[bone][frame] !== undefined) {
+        delete keyframes[bone][frame];
+        if (Object.keys(keyframes[bone]).length === 0) delete keyframes[bone];
+        return true;
+      }
+      return false;
+    }
+
+    function pctToFrame(clientX) {
+      const total = processedFrames.length - 1;
+      const rect = track.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      return Math.round(pct * total);
+    }
+
+    let lastMarkerClick = { bone: null, frame: -1, time: 0 };
+
+    function renderTimelineMarkers() {
+      track.innerHTML = '';
+      const total = processedFrames.length - 1;
+      if (total <= 0) return;
+
+      // Trim: dimmed regions outside the range + draggable In/Out handles
+      const inPct = (trimIn / total) * 100, outPct = (trimOut / total) * 100;
+      if (trimIn > 0) {
+        const d = document.createElement('div');
+        d.className = 'trim-dim'; d.style.left = '0'; d.style.width = `${inPct}%`;
+        track.appendChild(d);
+      }
+      if (trimOut < total) {
+        const d = document.createElement('div');
+        d.className = 'trim-dim'; d.style.left = `${outPct}%`; d.style.right = '0';
+        track.appendChild(d);
+      }
+      [['in', inPct, 'Trim start (drag)'], ['out', outPct, 'Trim end (drag)']].forEach(([which, pct, tip]) => {
+        const h = document.createElement('div');
+        h.className = 'trim-handle'; h.style.left = `${pct}%`; h.title = tip;
+        h.addEventListener('mousedown', (e) => startTrimDrag(which, e));
+        track.appendChild(h);
+      });
+
+      // Keyframe markers for the selected bone
+      const bone = boneSelect.value;
+      if (!keyframes[bone]) return;
+
+      for (let f in keyframes[bone]) {
+        const fIdx = parseInt(f);
+        const marker = document.createElement('div');
+        marker.className = `kf-marker ${fIdx === currentFrame ? 'active-frame' : ''} ${(fIdx < trimIn || fIdx > trimOut) ? 'outside-range' : ''}`;
+        marker.style.left = `${(fIdx / total) * 100}%`;
+        marker.title = `Frame ${fIdx + 1} — drag to move, double-click or right-click to remove`;
+
+        // Right-click removes the keyframe
+        marker.addEventListener('contextmenu', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          removeKeyframe(bone, fIdx);
+          updateEditorUI();
+        });
+
+        // Dragging Logic (a click without movement selects the frame; a quick second click removes it)
+        marker.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          e.stopPropagation(); e.preventDefault();
+          isPlaying = false; updatePlayIcon();
+          let moved = false;
+
+          const onMove = (me) => {
+            const newF = pctToFrame(me.clientX);
+            if (newF !== fIdx) moved = true;
+            marker.style.left = `${(newF / total) * 100}%`;
+            marker.dataset.tempFrame = newF;
+            // Live update scrubber
+            currentFrame = newF;
+            scrubber.value = currentFrame;
+          };
+          const onUp = () => {
+            document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp);
+            const temp = marker.dataset.tempFrame;
+            if (moved && temp !== undefined && parseInt(temp) !== fIdx) {
+              keyframes[bone][temp] = keyframes[bone][fIdx];
+              delete keyframes[bone][fIdx];
+              lastMarkerClick = { bone: null, frame: -1, time: 0 };
+            } else {
+              // Plain click: jump to this keyframe; double-click removes it
+              const now = performance.now();
+              if (lastMarkerClick.bone === bone && lastMarkerClick.frame === fIdx && now - lastMarkerClick.time < 400) {
+                removeKeyframe(bone, fIdx);
+                lastMarkerClick = { bone: null, frame: -1, time: 0 };
+              } else {
+                currentFrame = fIdx; scrubber.value = fIdx;
+                lastMarkerClick = { bone, frame: fIdx, time: now };
+              }
+            }
+            updateEditorUI();
+          };
+          document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+        });
+        track.appendChild(marker);
+      }
+    }
+
+    // ---- Trim controls ----
+    function startTrimDrag(which, e) {
+      if (e.button !== 0) return;
+      e.preventDefault(); e.stopPropagation();
+      isPlaying = false; updatePlayIcon();
+      const total = processedFrames.length - 1;
+      const onMove = (me) => {
+        const f = pctToFrame(me.clientX);
+        if (which === 'in') trimIn = Math.max(0, Math.min(f, trimOut - 1));
+        else trimOut = Math.min(total, Math.max(f, trimIn + 1));
+        // Preview the pose at the cut point while dragging
+        currentFrame = (which === 'in') ? trimIn : trimOut;
+        scrubber.value = currentFrame;
+        updateEditorUI();
+      };
+      const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+      document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+    }
+
+    function setTrimIn() {
+      if (processedFrames.length < 2) return;
+      trimIn = Math.max(0, Math.min(currentFrame, trimOut - 1));
+      updateEditorUI();
+    }
+    function setTrimOut() {
+      if (processedFrames.length < 2) return;
+      trimOut = Math.min(processedFrames.length - 1, Math.max(currentFrame, trimIn + 1));
+      updateEditorUI();
+    }
+    function resetTrim() {
+      if (processedFrames.length === 0) return;
+      trimIn = 0; trimOut = processedFrames.length - 1;
+      updateEditorUI();
+    }
+
+    function updateTrimUI() {
+      const n = processedFrames.length;
+      const kept = trimOut - trimIn + 1;
+      const fps = 1 / frameTime;
+      document.getElementById('trim-info').innerHTML =
+        `In: frame ${trimIn + 1} &nbsp; Out: frame ${trimOut + 1}<br>` +
+        `Keeping ${kept} of ${n} frames (${(kept / fps).toFixed(2)}s)`;
+      const full = (trimIn === 0 && trimOut === n - 1);
+      document.getElementById('crop-btn').disabled = full;
+      document.getElementById('reset-trim-btn').disabled = full;
+      document.getElementById('undo-crop-btn').disabled = !undoSnapshot;
+    }
+
+    function cropToRange() {
+      const n = processedFrames.length;
+      if (n === 0 || (trimIn === 0 && trimOut === n - 1)) return;
+      const inF = trimIn, outF = trimOut;
+
+      // Save snapshot for undo
+      undoSnapshot = { frames: processedFrames, keyframes: JSON.parse(JSON.stringify(keyframes)), currentFrame, trimIn, trimOut };
+
+      // Re-time keyframes. Where a bone has keys outside the range, bake its interpolated pose
+      // at the cut point so the animation inside the range is unchanged.
+      Object.keys(keyframes).forEach(bone => {
+        const ks = keyframes[bone];
+        const keys = Object.keys(ks).map(Number);
+        if (keys.length === 0) { delete keyframes[bone]; return; }
+        const hasBefore = keys.some(k => k < inF);
+        const hasAfter = keys.some(k => k > outF);
+        const atIn = (hasBefore && ks[inF] === undefined) ? getInterpolatedRotation(bone, inF, null).slice() : null;
+        const atOut = (hasAfter && ks[outF] === undefined) ? getInterpolatedRotation(bone, outF, null).slice() : null;
+
+        const shifted = {};
+        keys.forEach(k => { if (k >= inF && k <= outF) shifted[k - inF] = ks[k]; });
+        if (atIn) shifted[0] = atIn;
+        if (atOut) shifted[outF - inF] = atOut;
+
+        if (Object.keys(shifted).length === 0) delete keyframes[bone];
+        else keyframes[bone] = shifted;
+      });
+
+      processedFrames = processedFrames.slice(inF, outF + 1);
+      trimIn = 0; trimOut = processedFrames.length - 1;
+      currentFrame = Math.max(0, Math.min(currentFrame - inF, processedFrames.length - 1));
+      scrubber.max = processedFrames.length - 1; scrubber.value = currentFrame;
+      statusText.innerText = `Cropped to ${processedFrames.length} frames. Use "Undo Last Crop" to revert.`;
+      updateEditorUI();
+    }
+
+    function undoCrop() {
+      if (!undoSnapshot) return;
+      processedFrames = undoSnapshot.frames;
+      Object.keys(keyframes).forEach(k => delete keyframes[k]);
+      Object.assign(keyframes, undoSnapshot.keyframes);
+      // JSON round-trip turns frame keys into strings, which is what the code already expects.
+      trimIn = undoSnapshot.trimIn; trimOut = undoSnapshot.trimOut;
+      currentFrame = undoSnapshot.currentFrame;
+      undoSnapshot = null;
+      scrubber.max = processedFrames.length - 1; scrubber.value = currentFrame;
+      statusText.innerText = `Crop undone. ${processedFrames.length} frames restored.`;
+      updateEditorUI();
+    }
+
+    function updateEditorUI() {
+      if (processedFrames.length === 0) return;
+      const bone = boneSelect.value;
+      
+      // Update 3D Selection Color
+      Object.keys(jointsMap).forEach(k => {
+        jointsMap[k].material = (k === bone) ? selectedMat : defaultMat;
+      });
+
+      renderTimelineMarkers();
+      updateTrimUI();
+      document.getElementById('del-kf-btn').disabled = !(keyframes[bone] && keyframes[bone][currentFrame] !== undefined);
+      document.getElementById('clear-bone-btn').disabled = !(keyframes[bone] && Object.keys(keyframes[bone]).length > 0);
+
+      const aiRot = processedFrames[currentFrame][bone].rot;
+      const dispRot = getInterpolatedRotation(bone, currentFrame, aiRot);
+      
+      rx.value = Math.round(dispRot[1]); vx.innerText = rx.value + '°';
+      ry.value = Math.round(dispRot[2]); vy.innerText = ry.value + '°';
+      rz.value = Math.round(dispRot[0]); vz.innerText = rz.value + '°';
+    }
+
+    boneSelect.addEventListener('change', updateEditorUI);
+    
+    [rx, ry, rz].forEach(slider => {
+      slider.addEventListener('input', () => {
+        isPlaying = false; updatePlayIcon();
+        vx.innerText = rx.value + '°'; vy.innerText = ry.value + '°'; vz.innerText = rz.value + '°';
+        const bone = boneSelect.value;
+        if (jointsMap[bone]) {
+          jointsMap[bone].rotation.set(THREE.MathUtils.degToRad(rx.value), THREE.MathUtils.degToRad(ry.value), THREE.MathUtils.degToRad(rz.value), 'ZXY');
+        }
+      });
+    });
+
+    document.getElementById('set-kf-btn').addEventListener('click', () => {
+      const bone = boneSelect.value;
+      if (!keyframes[bone]) keyframes[bone] = {};
+      keyframes[bone][currentFrame] = [parseFloat(rz.value), parseFloat(rx.value), parseFloat(ry.value)];
+      updateEditorUI();
+    });
+
+    document.getElementById('del-kf-btn').addEventListener('click', () => {
+      removeKeyframe(boneSelect.value, currentFrame);
+      updateEditorUI();
+    });
+
+    document.getElementById('set-in-btn').addEventListener('click', setTrimIn);
+    document.getElementById('set-out-btn').addEventListener('click', setTrimOut);
+    document.getElementById('reset-trim-btn').addEventListener('click', resetTrim);
+    document.getElementById('crop-btn').addEventListener('click', cropToRange);
+    document.getElementById('undo-crop-btn').addEventListener('click', undoCrop);
+
+    // Keyboard shortcuts: Delete = remove keyframe at current frame, I / O = set trim in / out
+    document.addEventListener('keydown', (e) => {
+      if (processedFrames.length === 0 || e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target;
+      if (t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && t.type !== 'range')) return;
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        if (removeKeyframe(boneSelect.value, currentFrame)) updateEditorUI();
+      } else if (e.key === 'i' || e.key === 'I') { setTrimIn(); }
+      else if (e.key === 'o' || e.key === 'O') { setTrimOut(); }
+    });
+
+    document.getElementById('clear-bone-btn').addEventListener('click', () => {
+      if (keyframes[boneSelect.value]) delete keyframes[boneSelect.value];
+      updateEditorUI();
+    });
+
+    // 6b. BVH IMPORT
+    // Parses any BVH, then normalizes every joint to the editor's internal convention
+    // (rotations stored as [Z, X, Y] degrees, applied in 'ZXY' order) so editing/export stay consistent.
+    function parseBVH(text) {
+      const tok = text.replace(/^\uFEFF/, '').split(/\s+/).filter(Boolean);
+      let p = 0;
+      const next = () => tok[p++];
+      const num = () => { const v = parseFloat(next()); if (isNaN(v)) throw new Error('Expected a number near token ' + p); return v; };
+
+      if ((next() || '').toUpperCase() !== 'HIERARCHY') throw new Error('Not a BVH file (missing HIERARCHY).');
+      if ((next() || '').toUpperCase() !== 'ROOT') throw new Error('Missing ROOT joint.');
+
+      const used = new Set(), flat = [];
+      const uniq = (n) => { let u = n, i = 2; while (used.has(u)) u = n + '_' + (i++); used.add(u); return u; };
+
+      function parseNode() {
+        const node = { name: uniq(next()), offset: [0, 0, 0], channels: [], children: [], origChannels: [] };
+        flat.push(node);
+        if (next() !== '{') throw new Error('Expected "{" after joint ' + node.name);
+        for (;;) {
+          const t = next();
+          if (t === undefined) throw new Error('Unexpected end of file in HIERARCHY.');
+          const u = t.toUpperCase();
+          if (t === '}') break;
+          else if (u === 'OFFSET') node.offset = [num(), num(), num()];
+          else if (u === 'CHANNELS') { const n = parseInt(next()); for (let i = 0; i < n; i++) node.origChannels.push(next()); }
+          else if (u === 'JOINT') node.children.push(parseNode());
+          else if (u === 'END') { // End Site
+            next(); if (next() !== '{') throw new Error('Malformed End Site.');
+            for (let x = next(); x !== '}'; x = next()) {
+              if (x === undefined) throw new Error('Unexpected end of file in End Site.');
+              if (x.toUpperCase() === 'OFFSET') node.endOffset = [num(), num(), num()];
+            }
+          }
+        }
+        return node;
+      }
+      const rig = parseNode();
+
+      // Skip any extra ROOTs (only the first skeleton is supported)
+      let extraRoots = 0;
+      while (p < tok.length && tok[p].toUpperCase() !== 'MOTION') { p++; if ((tok[p - 1] || '').toUpperCase() === 'ROOT') extraRoots++; }
+      if ((next() || '').toUpperCase() !== 'MOTION') throw new Error('Missing MOTION section.');
+      if ((next() || '').toLowerCase() !== 'frames:') throw new Error('Missing "Frames:".');
+      const declared = parseInt(next());
+      if ((next() || '').toLowerCase() !== 'frame' || (next() || '').toLowerCase() !== 'time:') throw new Error('Missing "Frame Time:".');
+      const ft = num();
+
+      const perFrame = flat.reduce((a, n) => a + n.origChannels.length, 0);
+      if (perFrame === 0) throw new Error('No channels found.');
+      const avail = Math.floor((tok.length - p) / perFrame);
+      const nFrames = Math.min(declared, avail);
+      if (nFrames < 1) throw new Error('No motion frames found.');
+
+      const D = THREE.MathUtils.radToDeg, R = THREE.MathUtils.degToRad;
+      const frames = [];
+      for (let f = 0; f < nFrames; f++) {
+        const frame = {};
+        for (const node of flat) {
+          let pos = null, order = '', ang = { X: 0, Y: 0, Z: 0 };
+          for (const ch of node.origChannels) {
+            const v = parseFloat(tok[p++]);
+            const c = ch.toLowerCase();
+            if (c.endsWith('position')) { if (node === rig) { pos = pos || [0, 0, 0]; pos['xyz'.indexOf(c[0])] = v; } }
+            else if (c.endsWith('rotation')) { const L = ch[0].toUpperCase(); if (!order.includes(L)) { order += L; ang[L] = v; } }
+          }
+          let rot = [0, 0, 0];
+          if (order) {
+            for (const L of 'XYZ') if (!order.includes(L)) order += L;
+            if (order === 'ZXY') rot = [ang.Z, ang.X, ang.Y];
+            else {
+              const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(R(ang.X), R(ang.Y), R(ang.Z), order));
+              const e = new THREE.Euler().setFromQuaternion(q, 'ZXY');
+              rot = [D(e.z), D(e.x), D(e.y)];
+            }
+          }
+          rot = rot.map(v => isNaN(v) ? 0 : Math.round(v * 100) / 100);
+          frame[node.name] = (node === rig) ? { pos: pos || rig.offset.slice(), rot } : { rot };
+        }
+        frames.push(frame);
+      }
+
+      // Normalize channel layout so export matches what the editor stores
+      flat.forEach(n => { n.channels = ['Zrotation', 'Xrotation', 'Yrotation']; delete n.origChannels; });
+      rig.channels = ['Xposition', 'Yposition', 'Zposition', 'Zrotation', 'Xrotation', 'Yrotation'];
+
+      return { rig, frames, frameTime: ft > 0 ? ft : 1 / 30, joints: flat.length, declared, nFrames, extraRoots };
+    }
+
+    const bvhInput = document.getElementById('bvh-input');
+    document.getElementById('import-bvh-btn').addEventListener('click', () => bvhInput.click());
+    bvhInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        if (typeof THREE === 'undefined') throw new Error('three.js did not load, so the 3D editor is unavailable.');
+        statusText.innerText = `Parsing ${file.name}...`;
+        const parsed = parseBVH(await file.text());
+        isPlaying = false; updatePlayIcon();
+        loadRig(parsed.rig, parsed.frames[0][parsed.rig.name].pos);
+        resetEditState();
+        processedFrames = parsed.frames; frameTime = parsed.frameTime;
+        exportName = file.name.replace(/\.[^.]*$/, '') + '_edited.bvh';
+        document.getElementById('keep-jumps').checked = true;
+        trimIn = 0; trimOut = processedFrames.length - 1; currentFrame = 0;
+        scrubber.max = processedFrames.length - 1; scrubber.value = 0;
+        playBtn.disabled = false; downloadBtn.disabled = false; scrubber.disabled = false;
+        document.getElementById('editor-panel').style.opacity = '1';
+        document.getElementById('editor-panel').style.pointerEvents = 'all';
+        let msg = `Imported ${file.name}: ${parsed.joints} joints, ${parsed.nFrames} frames @ ${(1 / parsed.frameTime).toFixed(1)} fps.`;
+        if (parsed.nFrames < parsed.declared) msg += ` File declared ${parsed.declared} frames but only ${parsed.nFrames} had data.`;
+        if (parsed.extraRoots) msg += ` ${parsed.extraRoots} extra ROOT skeleton(s) ignored.`;
+        statusText.innerText = msg;
+        isPlaying = true; updatePlayIcon(); updateEditorUI();
+      } catch (err) {
+        statusText.innerText = 'BVH import failed: ' + err.message;
+      } finally {
+        e.target.value = '';
+      }
+    });
+
+    // 6c. FOOT GROUNDING
+    // Forward-kinematics the legs (root at height 0), find the lowest foot joint each frame, and set the root height so it rests on the floor.
+    const FOOT_CLEARANCE = 3.5; // standard rig: ankle joint height above floor (= joint sphere radius)
+
+    function getFootInfo() {
+      const rest = {}, leaves = [];
+      let ymin = Infinity, ymax = -Infinity;
+      (function walk(n, y) {
+        const yy = y + n.offset[1];
+        rest[n.name] = yy; ymin = Math.min(ymin, yy); ymax = Math.max(ymax, yy);
+        if (n.children.length === 0) leaves.push(n.name);
+        n.children.forEach(c => walk(c, yy));
+      })(RIG, 0);
+      if (RIG === STANDARD_RIG) return { feet: ['LeftFoot', 'RightFoot'], clearance: FOOT_CLEARANCE, k: 1 };
+      // Imported rig: lowest leaf joints in the rest pose are the feet; their joints sit on the floor
+      const feet = leaves.filter(n => rest[n] <= ymin + 0.25 * (ymax - ymin));
+      return { feet, clearance: 0, k: Math.max((ymax - ymin) / 120, 1e-6) };
+    }
+
+    function lowestFootY(f, feet) {
+      const fr = processedFrames[f];
+      let low = Infinity;
+      (function walk(node, pq, pp) {
+        const r = getInterpolatedRotation(node.name, f, fr[node.name].rot);
+        const lq = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+          THREE.MathUtils.degToRad(r[1]), THREE.MathUtils.degToRad(r[2]), THREE.MathUtils.degToRad(r[0]), 'ZXY'));
+        const q = pq ? pq.clone().multiply(lq) : lq;
+        const pos = pq ? new THREE.Vector3(...node.offset).applyQuaternion(pq).add(pp) : new THREE.Vector3(0, 0, 0);
+        if (feet.includes(node.name)) low = Math.min(low, pos.y);
+        node.children.forEach(c => walk(c, q, pos));
+      })(RIG, null, null);
+      return low;
+    }
+
+    function groundFeet(preserveJumps) {
+      const { feet, clearance, k } = getFootInfo();
+      if (!feet.length || processedFrames.length === 0) return false;
+      const a = processedFrames.map((_, f) => lowestFootY(f, feet));          // lowest foot height relative to the root
+      const y0 = processedFrames.map(fr => fr[ROOT_NAME].pos[1]);              // current root height
+      const world = a.map((v, i) => v + y0[i]);                                // current lowest foot height above the origin
+      const g = world.slice().sort((x, y) => x - y)[Math.floor(world.length * 0.1)]; // typical resting foot level
+      const t0 = 5 * k, t1 = 15 * k;
+      const smooth = (d) => { const t = Math.max(0, Math.min(1, (d - t0) / (t1 - t0))); return t * t * (3 - 2 * t); };
+
+      processedFrames = processedFrames.map((fr, f) => {
+        const snap = clearance - a[f];                                         // lowest foot exactly on the floor
+        let y = snap;
+        if (preserveJumps) {
+          const w = smooth(world[f] - g);                                      // 0 = on the floor, 1 = clearly airborne
+          y = (1 - w) * snap + w * (y0[f] + clearance - g);                    // airborne frames keep their motion, shifted to the floor level
+        }
+        const p = fr[ROOT_NAME].pos;
+        return { ...fr, [ROOT_NAME]: { ...fr[ROOT_NAME], pos: [p[0], y, p[2]] } };
+      });
+      return true;
+    }
+
+    document.getElementById('ground-btn').addEventListener('click', () => {
+      if (processedFrames.length === 0) return;
+      const ok = groundFeet(document.getElementById('keep-jumps').checked);
+      statusText.innerText = ok ? 'Feet snapped to the floor.' : 'Could not find foot joints in this rig.';
+      updateEditorUI();
+    });
+
+    // 7. PLAYBACK & RENDER LOOP
+    function updatePlayIcon() {
+      playBtn.innerHTML = isPlaying 
+        ? `<svg style="width:20px;height:20px" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`
+        : `<svg style="width:20px;height:20px;margin-left:3px" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>`;
+    }
+    
+    playBtn.addEventListener('click', () => { isPlaying = !isPlaying; updatePlayIcon(); });
+    scrubber.addEventListener('input', (e) => { currentFrame = parseInt(e.target.value); updateEditorUI(); });
+
+    function animate() {
+      requestAnimationFrame(animate);
+      if (processedFrames.length > 0) {
+        const now = performance.now();
+        if (isPlaying) {
+          playAcc += now - lastTime;
+          const step = frameTime * 1000;
+          const adv = Math.floor(playAcc / step);
+          if (adv > 0) {
+            playAcc -= adv * step;
+            const len = trimOut - trimIn + 1;
+            if (currentFrame < trimIn || currentFrame > trimOut) currentFrame = trimIn;
+            else currentFrame = trimIn + ((currentFrame - trimIn + adv) % len);
+            scrubber.value = currentFrame;
+            updateEditorUI();
+          }
+        } else playAcc = 0;
+        lastTime = now;
+        
+        frameCounter.innerText = `${currentFrame + 1} / ${processedFrames.length}`;
+        const fData = processedFrames[currentFrame];
+        jointsMap[ROOT_NAME].position.set(...fData[ROOT_NAME].pos);
+        
+        Object.keys(fData).forEach(bone => {
+          if (jointsMap[bone] && fData[bone].rot) {
+            const finalR = getInterpolatedRotation(bone, currentFrame, fData[bone].rot);
+            jointsMap[bone].rotation.set(THREE.MathUtils.degToRad(finalR[1]), THREE.MathUtils.degToRad(finalR[2]), THREE.MathUtils.degToRad(finalR[0]), 'ZXY');
+          }
+        });
+      }
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // 8. BVH DOWNLOAD
+    downloadBtn.addEventListener('click', () => {
+      let bvh = "HIERARCHY\n";
+      function buildHier(node, depth) {
+        const ind = "  ".repeat(depth);
+        bvh += `${ind}${depth === 0 ? 'ROOT' : 'JOINT'} ${node.name}\n${ind}{\n${ind}  OFFSET ${node.offset.join(' ')}\n${ind}  CHANNELS ${node.channels.length} ${node.channels.join(' ')}\n`;
+        if (node.children.length === 0) bvh += `${ind}  End Site\n${ind}  {\n${ind}    OFFSET ${(node.endOffset || [0, 5, 0]).join(' ')}\n${ind}  }\n`;
+        else node.children.forEach(c => buildHier(c, depth + 1));
+        bvh += `${ind}}\n`;
+      }
+      buildHier(RIG, 0);
+      bvh += `MOTION\nFrames: ${trimOut - trimIn + 1}\nFrame Time: ${frameTime}\n`;
+      
+      for (let i = trimIn; i <= trimOut; i++) {
+        let row = [];
+        const f = processedFrames[i];
+        function flatten(node) {
+          if (node === RIG) row.push(...f[node.name].pos);
+          const eRot = getInterpolatedRotation(node.name, i, f[node.name].rot);
+          row.push(...eRot.map(v => Math.round(v * 100) / 100));
+          node.children.forEach(c => flatten(c));
+        }
+        flatten(RIG);
+        bvh += row.join(' ') + "\n";
+      }
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bvh], { type: 'text/plain' }));
+      a.download = exportName; a.click();
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix(); renderer.setSize(container.clientWidth, container.clientHeight);
+    });
+  </script>
+</body>
+</html>
